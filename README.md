@@ -5,3 +5,6 @@ This code implements the seam carving algorithm described in the paper _Seam Car
 
 # Requirements
 This program uses SDL2 to load and display an image. Right now it only works with bmp images with 24-bit pixels. It also only works on big endian systems.
+
+# Building
+Type "make". If everything works the executable will be named "carve".
