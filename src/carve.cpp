@@ -141,6 +141,76 @@ std::vector<RGB> removeVerticalSeam(const std::vector<uint32_t>& seam, std::vect
 	return new_pixels;
 }
 
+std::vector<uint32_t> getHorizontalSeam(std::vector<RGB>& pixels, uint32_t width, uint32_t height) {
+	//Initialized path costs
+	std::vector<std::vector<SeamValue>> paths(width, {height, {0, -1}});
+	//Calculate the minimum path costs from left to right
+	for (int w = 1; w < width; ++w) {
+		//Now loop over this column and update the paths
+		std::function<bool(int, int)> update = [&](int start, int stop) {
+			for (int y = start; y < stop; ++y) {
+				//Check each of the possible sources (left-down, left, and left-up
+				for (int i = -1; i < 2; ++i) {
+					int source = y+i;
+					uint32_t here = w + y*width;
+					SeamValue& cost_here = paths[w][y];
+					if (0 <= source and source < height) {
+						//Calculate the cost
+						uint32_t prev = (w-1) + source*width;
+						unsigned int delta = pixels[here] - pixels[prev];
+						//If there isn't a path here yet or this is the least
+
+						SeamValue& cost_prev = paths[w-1][source];
+						if (-1 == cost_here.prev or cost_prev.cost+delta < cost_here.cost) {
+							cost_here.prev = source;
+							cost_here.cost = cost_prev.cost+delta;
+						}
+					}
+				}
+			}
+			return true;
+		};
+		//Run the operation on the lower side asynchronously
+		//Use a future to wait for the lower side to finish
+		std::future<bool> lower = std::async(std::launch::async, update, height/2, height);
+		//Run the left side
+		update(0, height/2);
+		//Wait for the lower side to finish
+		lower.get();
+	}
+	//The minimum path
+	auto min = std::min_element(paths.at(width-1).begin(), paths.at(width-1).end());
+	std::vector<uint32_t> min_path(width, 0);
+	min_path.back() = std::distance(paths.back().begin(), min);
+	int prev = min->prev;
+	for (int w = width-1; w > 0; --w) {
+		//Set the offset at this width
+		min_path.at(w-1) = prev;
+		prev = paths.at(w-1).at(prev).prev;
+	}
+	
+	return min_path;
+}
+
+std::vector<RGB> removeHorizontalSeam(const std::vector<uint32_t>& seam, std::vector<RGB>& pixels, uint32_t width, uint32_t height) {
+	std::vector<RGB> new_pixels((height-1)*width);
+	//TODO FIXME Copying like this is inefficient - is there an elegant and
+	//efficient alternative?
+	for (int w = 0; w < width; ++w) {
+		//The insertion index
+		size_t ins_index = w;
+		for (int h = 0; h < height; ++h) {
+			//Copy all pixels except for the removed ones
+			if (h != seam.at(w)) {
+				new_pixels.at(ins_index) = pixels.at(h*width + w);
+				//The insertion index jumps to the next row (1 width away)
+				ins_index += width;
+			}
+		}
+	}
+	return new_pixels;
+}
+
 int main(int argc, char** argv) {
 
 	if (argc != 2) {
@@ -266,8 +336,9 @@ int main(int argc, char** argv) {
 	bool quit = false;
 	while (not quit) {
 		while (SDL_PollEvent(&e)){
-			//Remember the previous width if we resize
+			//Remember the previous dimensions if we resize
 			uint32_t last_width = cur_width;
+			uint32_t last_height = cur_height;
 			switch (e.type) {
 				//If user closes the window
 				case SDL_QUIT:
@@ -281,18 +352,39 @@ int main(int argc, char** argv) {
 								cur_pixels = orig_pixels;
 								last_width = width;
 							}
+							if (e.window.data2 > cur_height) {
+								cur_pixels = orig_pixels;
+								last_height = height;
+							}
 							cur_width = e.window.data1;
 							cur_height = e.window.data2;
 							SDL_SetWindowSize(win, cur_width, cur_height);
 							std::cout<<"Resizing to "<<cur_width<<", "<<cur_height<<'\n';
 
-							//If we've gotten smaller then delete some vertical seams
+							//If we've gotten narrower then delete some vertical seams
 							if (cur_width < last_width) {
 								for (int i = 0; (last_width-i) > cur_width; ++i) {
 									//Find the seam
-									std::vector<unsigned int> seam = getVerticalSeam(cur_pixels, last_width-i, height);
+									std::vector<unsigned int> seam = getVerticalSeam(cur_pixels, last_width-i, last_height);
 									//And remove it
-									cur_pixels = removeVerticalSeam(seam, cur_pixels, last_width-i, height);
+									cur_pixels = removeVerticalSeam(seam, cur_pixels, last_width-i, last_height);
+								}
+							}
+
+							//If we've gotten shorter then delete some horizontal seams
+							if (cur_height < last_height) {
+								for (int i = 0; (last_height-i) > cur_height; ++i) {
+									//Find the seam
+									std::vector<unsigned int> seam = getHorizontalSeam(cur_pixels, cur_width, last_height-i);
+									/*
+									std::cout<<"Removing seam:\n";
+									for (unsigned int i : seam) {
+										std::cout<<i<<' ';
+									}
+									std::cout<<'\n';
+									*/
+									//And remove it
+									cur_pixels = removeHorizontalSeam(seam, cur_pixels, cur_width, last_height-i);
 								}
 							}
 							std::cerr<<"Destroying surface and redrawing\n";
