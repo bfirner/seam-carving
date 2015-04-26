@@ -58,6 +58,14 @@ unsigned int square(unsigned int val) {
 
 //Skipping doing square root to make the difference computation faster
 unsigned int operator-(RGB& a, RGB& b) {
+	//Alpha value of 0 stands for forced removal of pixels
+	//Technically we should choose a value based upon the image size and the
+	//maximum entropy of a seam
+	/*
+	if (0 == a.alpha or 0 == b.alpha) {
+		return 0;
+	}
+	*/
 	return square((unsigned int)a.red - b.red) +
 	       square((unsigned int)a.green - b.green) +
 	       square((unsigned int)a.blue - b.blue);
@@ -71,38 +79,47 @@ struct ThreeBytes {
 struct SeamValue {
 	unsigned int cost;
 	int prev;
+	//The number of pixels this path passes that are user selected for removal
+	int forced_count;
 };
 
 bool operator<(SeamValue& a, SeamValue& b) {
-	return a.cost < b.cost;
+	return a.forced_count > b.forced_count or
+		(a.forced_count == b.forced_count and a.cost < b.cost);
 }
 
 std::vector<uint32_t> getVerticalSeam(std::vector<RGB>& pixels, uint32_t width, uint32_t height) {
 	//Initialized path costs
-	std::vector<std::vector<SeamValue>> paths(height, {width, {0, -1}});
+	std::vector<std::vector<SeamValue>> paths(height, {width, {0, -1, 0}});
 	//Calculate the minimum path costs
 	for (int h = 1; h < height; ++h) {
 		//Now loop over this row and update the paths
 		//Update in two different threads, 0 to width/2 and width/2 to width
 		std::function<bool(int, int)> update = [&](int start, int stop) {
 			for (int x = start; x < stop; ++x) {
+				uint32_t here = h*width + x;
+				SeamValue& cost_here = paths[h][x];
 				//Check each of the possible sources
 				for (int i = -1; i < 2; ++i) {
 					int source = x+i;
-					uint32_t here = h*width + x;
-					SeamValue& cost_here = paths[h][x];
 					if (0 <= source and source < width) {
 						//Calculate the cost
 						uint32_t prev = (h-1)*width + source;
 						unsigned int delta = pixels[here] - pixels[prev];
 						//If there isn't a path here yet or this is the least
 
-						SeamValue& cost_prev = paths[h-1][source];
-						if (-1 == cost_here.prev or cost_prev.cost+delta < cost_here.cost) {
+						SeamValue cost_prev = paths[h-1][source];
+						cost_prev.cost += delta;
+						if (-1 == cost_here.prev or cost_prev < cost_here) {
 							cost_here.prev = source;
-							cost_here.cost = cost_prev.cost+delta;
+							cost_here.cost = cost_prev.cost;
+							cost_here.forced_count = cost_prev.forced_count;
 						}
 					}
+				}
+				//Increment the forced removal count for paths passing through here
+				if (0 == pixels[here].alpha) {
+					cost_here.forced_count++;
 				}
 			}
 			return true;
@@ -149,23 +166,29 @@ std::vector<uint32_t> getHorizontalSeam(std::vector<RGB>& pixels, uint32_t width
 		//Now loop over this column and update the paths
 		std::function<bool(int, int)> update = [&](int start, int stop) {
 			for (int y = start; y < stop; ++y) {
+				uint32_t here = w + y*width;
+				SeamValue& cost_here = paths[w][y];
 				//Check each of the possible sources (left-down, left, and left-up
 				for (int i = -1; i < 2; ++i) {
 					int source = y+i;
-					uint32_t here = w + y*width;
-					SeamValue& cost_here = paths[w][y];
 					if (0 <= source and source < height) {
 						//Calculate the cost
 						uint32_t prev = (w-1) + source*width;
 						unsigned int delta = pixels[here] - pixels[prev];
 						//If there isn't a path here yet or this is the least
 
-						SeamValue& cost_prev = paths[w-1][source];
-						if (-1 == cost_here.prev or cost_prev.cost+delta < cost_here.cost) {
+						SeamValue cost_prev = paths[w-1][source];
+						cost_prev.cost += delta;
+						if (-1 == cost_here.prev or cost_prev < cost_here) {
 							cost_here.prev = source;
-							cost_here.cost = cost_prev.cost+delta;
+							cost_here.cost = cost_prev.cost;
+							cost_here.forced_count = cost_prev.forced_count;
 						}
 					}
+				}
+				//Increment the forced removal count for paths passing through here
+				if (0 == pixels[here].alpha) {
+					cost_here.forced_count++;
 				}
 			}
 			return true;
@@ -209,6 +232,18 @@ std::vector<RGB> removeHorizontalSeam(const std::vector<uint32_t>& seam, std::ve
 		}
 	}
 	return new_pixels;
+}
+
+//Mark a 9x9 pixel area for removal by setting the alpha on
+void markForRemoval(std::vector<RGB>& pixels, uint32_t width, uint32_t height, int x_center, int y_center) {
+	for (int x = x_center-4; x < x_center+5; ++x) {
+		for (int y = y_center-4; y < y_center+5; ++y) {
+			if (0 <= x and 0 <= y and
+					x < width and y < height) {
+				pixels.at(y*width + x).alpha = 0;
+			}
+		}
+	}
 }
 
 int main(int argc, char** argv) {
@@ -334,6 +369,9 @@ int main(int argc, char** argv) {
 	//e is an SDL_Event variable we've declared before entering the main loop
 	SDL_Event e;
 	bool quit = false;
+	//Whether the user is highlighting an area to reduce entropy
+	bool highlighting = false;
+	bool refresh = false;
 	while (not quit) {
 		while (SDL_PollEvent(&e)){
 			//Remember the previous dimensions if we resize
@@ -343,6 +381,29 @@ int main(int argc, char** argv) {
 				//If user closes the window
 				case SDL_QUIT:
 					quit = true;
+					break;
+				case SDL_MOUSEBUTTONDOWN:
+					//Start highlighting an area to remove entropy on button down
+					if (SDL_BUTTON_LEFT == e.button.button) {
+						highlighting = true;
+						//Mark a 9x9 pixel area for removal
+						markForRemoval(cur_pixels, cur_width, cur_height, e.button.x, e.button.y);
+						refresh = true;
+					}
+					break;
+				case SDL_MOUSEBUTTONUP:
+					//Stop highlighting an area to remove entropy on button up
+					if (SDL_BUTTON_LEFT == e.button.button) {
+						highlighting = false;
+					}
+					break;
+				case SDL_MOUSEMOTION:
+					//If we are highlighting then mark this area for removal
+					if (highlighting) {
+						//Mark a 9x9 pixel area for removal
+						markForRemoval(cur_pixels, cur_width, cur_height, e.button.x, e.button.y);
+						refresh = true;
+					}
 					break;
 				case SDL_WINDOWEVENT:
 					switch (e.window.event) {
@@ -378,35 +439,7 @@ int main(int argc, char** argv) {
 									cur_pixels = removeHorizontalSeam(seam, cur_pixels, cur_width, last_height-i);
 								}
 							}
-							std::cerr<<"Destroying surface and redrawing\n";
-
-							//Destroy the existing texture and surface to be remade
-							SDL_FreeSurface(surface);
-							SDL_DestroyTexture(tex);
-
-							//Now try making a surface from the vector
-							//(The pixel data is not copied, must free this before the vector)
-							surface = SDL_CreateRGBSurfaceFrom(cur_pixels.data(), cur_width, cur_height, 8*sizeof(RGB), sizeof(RGB)*cur_width, 0xFF000000, 0xFF0000, 0xFF00, 0xFF);
-
-							if (surface == nullptr) {
-								SDL_DestroyRenderer(ren);
-								SDL_DestroyWindow(win);
-								fprintf(stderr, "CreateRGBSurface failed: %s\n", SDL_GetError());
-								SDL_Quit();
-								return 1;
-							}
-
-							//Create a texture from the surface
-							tex = SDL_CreateTextureFromSurface(ren, surface);
-							//SDL_Texture *tex = SDL_CreateTextureFromSurface(ren, bmp);
-							if (tex == nullptr){
-								SDL_FreeSurface(surface);
-								SDL_DestroyRenderer(ren);
-								SDL_DestroyWindow(win);
-								std::cout << "SDL_CreateTextureFromSurface Error: " << SDL_GetError() << std::endl;
-								SDL_Quit();
-								return 1;
-							}
+							refresh = true;
 							break;
 						default:
 							break;
@@ -415,6 +448,39 @@ int main(int argc, char** argv) {
 				default:
 					break;
 			}
+		}
+		if (refresh) {
+			std::cerr<<"Destroying surface and redrawing\n";
+
+			//Destroy the existing texture and surface to be remade
+			SDL_FreeSurface(surface);
+			SDL_DestroyTexture(tex);
+
+			//Now try making a surface from the vector
+			//(The pixel data is not copied, must free this before the vector)
+			surface = SDL_CreateRGBSurfaceFrom(cur_pixels.data(), cur_width, cur_height, 8*sizeof(RGB), sizeof(RGB)*cur_width, 0xFF000000, 0xFF0000, 0xFF00, 0xFF);
+
+			if (surface == nullptr) {
+				SDL_DestroyRenderer(ren);
+				SDL_DestroyWindow(win);
+				fprintf(stderr, "CreateRGBSurface failed: %s\n", SDL_GetError());
+				SDL_Quit();
+				return 1;
+			}
+
+			//Create a texture from the surface
+			tex = SDL_CreateTextureFromSurface(ren, surface);
+			//SDL_Texture *tex = SDL_CreateTextureFromSurface(ren, bmp);
+			if (tex == nullptr){
+				SDL_FreeSurface(surface);
+				SDL_DestroyRenderer(ren);
+				SDL_DestroyWindow(win);
+				std::cout << "SDL_CreateTextureFromSurface Error: " << SDL_GetError() << std::endl;
+				SDL_Quit();
+				return 1;
+			}
+
+			refresh = false;
 		}
 		//First clear the renderer
 		SDL_RenderClear(ren);
