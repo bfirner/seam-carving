@@ -348,12 +348,10 @@ int main(int argc, char** argv) {
 					switch (e.window.event) {
 						case SDL_WINDOWEVENT_RESIZED:
 							//Grew larger? Start from scratch
-							if (e.window.data1 > cur_width) {
+							if (e.window.data1 > cur_width or
+									e.window.data2 > cur_height) {
 								cur_pixels = orig_pixels;
 								last_width = width;
-							}
-							if (e.window.data2 > cur_height) {
-								cur_pixels = orig_pixels;
 								last_height = height;
 							}
 							cur_width = e.window.data1;
@@ -376,13 +374,6 @@ int main(int argc, char** argv) {
 								for (int i = 0; (last_height-i) > cur_height; ++i) {
 									//Find the seam
 									std::vector<unsigned int> seam = getHorizontalSeam(cur_pixels, cur_width, last_height-i);
-									/*
-									std::cout<<"Removing seam:\n";
-									for (unsigned int i : seam) {
-										std::cout<<i<<' ';
-									}
-									std::cout<<'\n';
-									*/
 									//And remove it
 									cur_pixels = removeHorizontalSeam(seam, cur_pixels, cur_width, last_height-i);
 								}
