@@ -36,7 +36,7 @@
 #include <iostream>
 #include <iterator>
 #include <functional>
-#include <thread>
+#include <future>
 #include <vector>
 #include <SDL2/SDL.h>
 #include <cmath>
@@ -84,7 +84,7 @@ std::vector<uint32_t> getVerticalSeam(std::vector<RGB>& pixels, uint32_t width, 
 	for (int h = 1; h < height; ++h) {
 		//Now loop over this row and update the paths
 		//Update in two different threads, 0 to width/2 and width/2 to width
-		std::function<void(int, int)> update = [&](int start, int stop) {
+		std::function<bool(int, int)> update = [&](int start, int stop) {
 			for (int x = start; x < stop; ++x) {
 				//Check each of the possible sources
 				for (int i = -1; i < 2; ++i) {
@@ -105,11 +105,15 @@ std::vector<uint32_t> getVerticalSeam(std::vector<RGB>& pixels, uint32_t width, 
 					}
 				}
 			}
+			return true;
 		};
-		std::thread a(update, 0, width/2);
-		std::thread b(update, width/2, width);
-		a.join();
-		b.join();
+		//Run the operation on the right side asynchronously
+		//Use a future to wait for the right side to finish
+		std::future<bool> right = std::async(std::launch::async, update, width/2, width);
+		//Run the left side
+		update(0, width/2);
+		//Wait for the right side to finish
+		right.get();
 	}
 	//The minimum path
 	auto min = std::min_element(paths.at(height-1).begin(), paths.at(height-1).end());
